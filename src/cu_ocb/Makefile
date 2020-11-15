@@ -32,7 +32,7 @@ SHARED=$(LIB_DIR)/libcu_ocb.so
 $(SHARED): $(OBJS)
 	$(NVCC) -o $(SHARED) $(OBJS) -shared
 
-LINK_FLAGS=-L$(LIB_DIR) -lcu_ocb -lprofiler
+LINK_FLAGS=-L$(LIB_DIR) -lcu_ocb $(LDFLAGS)
 
 EXE=$(BIN_DIR)/camellia
 $(EXE): $(OBJ_DIR)/main.o $(STATIC) $(SHARED)
