@@ -1,5 +1,7 @@
+CUDA_ARCH=sm_61
+
 NVCC=nvcc
-NVCC_FLAGS=-I.. -arch=sm_61 -std=c++17 -O2 --default-stream per-thread --compiler-options='-O2 -Wall -Wextra -fPIC -g'
+NVCC_FLAGS=-I.. -arch=$(CUDA_ARCH) -std=c++17 -O2 --default-stream per-thread --compiler-options='-O2 -Wall -Wextra -fPIC -g'
 
 PREFIX?=install
 
