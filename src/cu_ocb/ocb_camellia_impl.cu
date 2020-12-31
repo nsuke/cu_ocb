@@ -1,4 +1,6 @@
+#include "cu_ocb/measure.cuh"
 #include "cu_ocb/ocb_camellia_impl.cuh"
+#include "cu_ocb/camellia_cpu.h"
 
 #include <iomanip>
 #include <iostream>
@@ -19,32 +21,6 @@ std::ostream& operator<<(std::ostream& os, __uint128_t val)
   return os;
 }
 
-struct MeasureGpuTime
-{
-  MeasureGpuTime(float* result, cudaEvent_t& start, cudaEvent_t& stop)
-      : result_{result}, start_{start}, stop_{stop}
-  {
-    if (result_) cudaEventRecord(start_, 0);
-  }
-
-  ~MeasureGpuTime()
-  {
-    if (result_)
-      {
-        cudaEventRecord(stop_, 0);
-        cudaEventSynchronize(stop_);
-        float milliseconds{};
-        cudaEventElapsedTime(&milliseconds, start_, stop_);
-        *result_ += milliseconds;
-      }
-  }
-
- private:
-  float* result_;
-  cudaEvent_t& start_;
-  cudaEvent_t& stop_;
-};
-
 constexpr size_t kMaxAddressBit{34};
 }  // namespace
 
@@ -54,6 +30,8 @@ OcbCamelliaImpl::OcbCamelliaImpl(OcbConfig config)
       L_{allocateDevice(kMaxAddressBit * sizeof(Block))},
       checksum_host_{allocateHost(sizeof(Block))}
 {
+  std::cerr << " OFFSET_MODE = " << (int)config_.offset_mode << std::endl;
+  std::cerr << " CHECKSUM_ON_GPU = " << config_.checksum_on_gpu << std::endl;
   if (config_.measure_gpu_time)
     {
       cudaEventCreate(&start_);
@@ -73,10 +51,12 @@ OcbCamelliaImpl::~OcbCamelliaImpl()
 
 void OcbCamelliaImpl::generateKeytable(std::string_view key)
 {
-  auto cu_key = allocateDevice<uint8_t>(
-      sizeof(key), reinterpret_cast<const uint8_t*>(key.data()));
-  cudaMemcpy(cu_key, key.data(), key.size(), cudaMemcpyHostToDevice);
-  switch (key.size())
+  if (config_.camellia_on_gpu)
+  {
+    auto cu_key = allocateDevice<uint8_t>(
+        sizeof(key), reinterpret_cast<const uint8_t*>(key.data()));
+    cudaMemcpy(cu_key, key.data(), key.size(), cudaMemcpyHostToDevice);
+    switch (key.size())
     {
       case 128 / 8:
         camellia_setup128<<<1, config_.encrypt_threads>>>(cu_key, keytable_);
@@ -89,6 +69,11 @@ void OcbCamelliaImpl::generateKeytable(std::string_view key)
         std::cerr << "invalid key length: " << key.size();
         break;
     }
+  }
+  else
+  {
+    // cpu::camellia_setup128(key.data(), cpu_keytable_);
+  }
 }
 
 size_t OcbCamelliaImpl::encrypt(std::string_view data, size_t index,
@@ -118,20 +103,40 @@ size_t OcbCamelliaImpl::encrypt(std::string_view data, size_t index,
   if (config_.debug) std::cerr << "elem_count=" << elem_count << std::endl;
   if (!elem_count || elem_count < config_.minimum_blocks) return 0;
 
-  cudaMemcpy(in_buf_, data.data(), process_size, cudaMemcpyHostToDevice);
-  cudaDeviceSynchronize();
+  if (config_.camellia_on_gpu &&
+      config_.offset_mode != OffsetComputation::ApplyOnCpu)
+    {
+      cudaMemcpy(in_buf_, data.data(), process_size, cudaMemcpyHostToDevice);
+    }
+
+  // cudaDeviceSynchronize();
   if (!checkError(__FILE__, __LINE__)) return 0;
 
   if (encrypt)
     {
+      if (config_.checksum_on_gpu &&
+          config_.offset_mode == OffsetComputation::ApplyOnCpu)
+        {
+          throw std::logic_error("invalid config");
+          // if applying offset on CPU, input data is not loaded on GPU
+        }
       computeChecksum(checksum, in_buf_,
                       reinterpret_cast<const Block*>(data.data()),
                       process_size);
     }
-  cudaDeviceSynchronize();
+  // cudaDeviceSynchronize();
 
   auto offsets = fillOffsets(last_offset, index, L, process_size);
+  if (config_.camellia_on_gpu &&
+      config_.offset_mode == OffsetComputation::ApplyOnCpu)
+    {
+      applyOffsets(
+          const_cast<Block*>(reinterpret_cast<const Block*>(data.data())),
+          elem_count);
+      cudaMemcpy(in_buf_, data.data(), process_size, cudaMemcpyHostToDevice);
+    }
 
+  if (config_.camellia_on_gpu)
   {
     MeasureGpuTime m{config_.measure_gpu_time ? &time_.encryption_ : nullptr,
                      start_, stop_};
@@ -142,14 +147,38 @@ size_t OcbCamelliaImpl::encrypt(std::string_view data, size_t index,
       camellia_decrypt128<<<grid_size, block_size>>>(keytable_, offsets,
                                                      in_buf_, out_buf_);
   }
+  else
+  {
+    auto key = reinterpret_cast<uint32_t*>(cpu_keytable_.data());
+    auto input = reinterpret_cast<const uint32_t*>(data.data());
+    auto output = reinterpret_cast<uint32_t*>(result);
+    if (config_.offset_mode != OffsetComputation::ApplyOnCpu)
+    {
+      throw std::logic_error("invalid config");
+      // offset XOR needs to be applied outside this scope
+    }
+    if (encrypt)
+      for (size_t i = 0; i < elem_count; ++i)
+        cpu::camellia_encrypt128(key, input + i * 4, output + i * 4);
+    else
+      for (size_t i = 0; i < elem_count; ++i)
+        cpu::camellia_decrypt128(key, input + i * 4, output + i + 4);
+  }
   if (!checkError(__FILE__, __LINE__)) { throw std::runtime_error("encrypt"); }
 
-  cudaMemcpy(result, out_buf_, process_size, cudaMemcpyDeviceToHost);
+  if (config_.camellia_on_gpu)
+    cudaMemcpy(result, out_buf_, process_size, cudaMemcpyDeviceToHost);
+
   if (!checkError(__FILE__, __LINE__)) return 0;
+
+  if (config_.offset_mode == OffsetComputation::ApplyOnCpu)
+    {
+      applyOffsets(reinterpret_cast<Block*>(result), elem_count);
+    }
 
   if (!encrypt)
     {
-      cudaDeviceSynchronize();
+      // cudaDeviceSynchronize();
       computeChecksum(checksum, out_buf_,
                       reinterpret_cast<const Block*>(result), process_size);
     }
@@ -157,6 +186,12 @@ size_t OcbCamelliaImpl::encrypt(std::string_view data, size_t index,
   return elem_count;
 }
 
+void OcbCamelliaImpl::applyOffsets(Block* data, size_t size)
+{
+  for (size_t i = 0; i < size; ++i) { data[i] ^= offsets_cpu_buf_[i]; }
+}
+
+/*
 void OcbCamelliaImpl::applyOffsets(Block& last_offset, std::string_view L,
                                    size_t index, Block* data, size_t size)
 {
@@ -168,6 +203,7 @@ void OcbCamelliaImpl::applyOffsets(Block& last_offset, std::string_view L,
       data[i] ^= last_offset;
     }
 }
+*/
 
 u32* OcbCamelliaImpl::fillOffsets(Block& last_offset, size_t index,
                                   std::string_view L, size_t size)
@@ -177,15 +213,18 @@ u32* OcbCamelliaImpl::fillOffsets(Block& last_offset, size_t index,
 
   if (config_.offset_mode == OffsetComputation::Gpu)
     {
+      // std::cerr << " COMPUTING OFFSET ON GPU " << std::endl;
       cudaMemcpy(L_, L.data(), L.size(), cudaMemcpyHostToDevice);
-      MeasureGpuTime m{config_.measure_gpu_time ? &time_.ocb_offset_ : nullptr,
-                       start_, stop_};
+      // MeasureGpuTime m{config_.measure_gpu_time ? &time_.ocb_offset_ :
+      // nullptr,
+      //                  start_, stop_};
       result = off_.compute(last_offset, index, size / sizeof(Block), L_);
     }
 
-  if (config_.offset_mode == OffsetComputation::ComputeOnCpu ||
+  if (config_.offset_mode != OffsetComputation::Gpu ||
       config_.verify_with_cpu_result)
     {
+      // std::cerr << " COMPUTING OFFSET ON CPU " << std::endl;
       auto offsets_cpu = config_.offset_mode == OffsetComputation::ComputeOnCpu
                              ? reinterpret_cast<Block*>(offsets_host_.ptr_)
                              : offsets_cpu_buf_.data();
@@ -197,10 +236,11 @@ u32* OcbCamelliaImpl::fillOffsets(Block& last_offset, size_t index,
           offsets_cpu[i] = last_offset_cpu = last_offset_cpu ^ lptr[l_idx];
         }
 
-      if (config_.offset_mode != OffsetComputation::ComputeOnCpu)
+      if (config_.offset_mode == OffsetComputation::Gpu &&
+          config_.verify_with_cpu_result)
         {
           cudaMemcpy(offsets_host_, result, size, cudaMemcpyDeviceToHost);
-          cudaDeviceSynchronize();
+          // cudaDeviceSynchronize();
           auto cu_ptr = reinterpret_cast<Block*>(offsets_host_.ptr_);
           for (size_t i = 0; i < size / sizeof(Block); ++i)
             if (config_.debug && cu_ptr[i] != offsets_cpu[i])
@@ -220,10 +260,22 @@ u32* OcbCamelliaImpl::fillOffsets(Block& last_offset, size_t index,
         }
       else
         {
-          assert(offsets_cpu_);
           last_offset = last_offset_cpu;
-          cudaMemcpy(offsets_cpu_, offsets_cpu, size, cudaMemcpyHostToDevice);
-          result = offsets_cpu_;
+          if (config_.offset_mode == OffsetComputation::ComputeOnCpu)
+            {
+              assert(offsets_cpu_);
+              cudaMemcpy(offsets_cpu_, offsets_cpu, size,
+                         cudaMemcpyHostToDevice);
+              result = offsets_cpu_;
+            }
+          else if (config_.offset_mode == OffsetComputation::ApplyOnCpu)
+            {
+              return nullptr;
+            }
+          else
+            {
+              assert(false);
+            }
         }
     }
   return result;
@@ -235,17 +287,19 @@ void OcbCamelliaImpl::computeChecksum(Block& checksum, const u32* cu_data,
   Block checksum_cpu = checksum;
   if (config_.checksum_on_gpu)
     {
-      MeasureGpuTime m{config_.measure_gpu_time ? &time_.checksum_ : nullptr,
-                       start_, stop_};
+      // std::cerr << " COMPUTING CHECKSUM ON GPU " << std::endl;
+      // MeasureGpuTime m{config_.measure_gpu_time ? &time_.checksum_ : nullptr,
+      //                  start_, stop_};
       if (!chk_.compute(cu_data, size / sizeof(Block), checksum_host_))
         throw std::runtime_error("checksum");
       checksum ^= *reinterpret_cast<Block*>(checksum_host_.ptr_);
     }
   if (!config_.checksum_on_gpu || config_.verify_with_cpu_result)
     {
+      // std::cerr << " COMPUTING CHECKSUM ON CPU " << std::endl;
       for (size_t i = 0; i < size / sizeof(Block); ++i)
         {
-          std::cerr << " data[i] " <<  data[i] << std::endl;
+          // std::cerr << " data[i] " <<  data[i] << std::endl;
           checksum_cpu ^= data[i];
         }
       if (config_.checksum_on_gpu)

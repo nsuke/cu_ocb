@@ -1,5 +1,4 @@
 #pragma once
-
 #include "cu_ocb/camellia.cuh"
 #include "cu_ocb/cuda_mem.cuh"
 #include "cu_ocb/cuda_utils.cuh"
@@ -23,14 +22,24 @@ class OcbOffsetCalc
  public:
   explicit OcbOffsetCalc(size_t cuda_block_size = 64,
                          size_t cuda_block_size_for_buffer = 0)
-      : block_size_{cuda_block_size}
-      , block_size_for_buffer_{cuda_block_size_for_buffer}
+      : block_size_{cuda_block_size},
+        block_size_for_buffer_{cuda_block_size_for_buffer}
   {
     if (block_size_ < 4) throw std::invalid_argument("block size too small");
+    cudaEventCreate(&start_);
+    cudaEventCreate(&stop_);
+  }
+
+  ~OcbOffsetCalc()
+  {
+    cudaEventDestroy(start_);
+    cudaEventDestroy(stop_);
   }
 
   u32* compute(__uint128_t& last_offset, size_t pos128, size_t count128,
                const u32* L_table);
+
+  float exec_time_{};
 
  private:
   u32* ensureBuffer(size_t buf_idx, size_t buf_size);
@@ -39,6 +48,8 @@ class OcbOffsetCalc
   size_t block_size_;
   size_t block_size_for_buffer_;
   std::deque<std::pair<CudaMem<u32>, size_t>> buffers_;
+  cudaEvent_t start_;
+  cudaEvent_t stop_;
 };
 
 }  // namespace cu_ocb

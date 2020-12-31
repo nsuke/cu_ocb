@@ -22,6 +22,7 @@ struct OcbConfig
 
   size_t minimum_blocks{1};
   bool process_incomplete_block{true};
+  bool camellia_on_gpu{true};
   OffsetComputation offset_mode{OffsetComputation::Gpu};
   bool checksum_on_gpu{true};
 

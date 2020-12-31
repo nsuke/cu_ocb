@@ -24,8 +24,15 @@ class OcbCamelliaImpl
 
   void setKeytable(void* keytable)
   {
-    cudaMemcpy(keytable_, keytable, CAMELLIA_TABLE_BYTE_LEN,
-               cudaMemcpyHostToDevice);
+    if (config_.camellia_on_gpu)
+      cudaMemcpy(keytable_, keytable, CAMELLIA_TABLE_BYTE_LEN,
+                 cudaMemcpyHostToDevice);
+    else
+      {
+        auto k = reinterpret_cast<const char*>(keytable);
+        std::copy(k, k + CAMELLIA_TABLE_BYTE_LEN,
+                  std::back_inserter(cpu_keytable_));
+      }
   }
 
   size_t encrypt(std::string_view data, size_t index, std::string_view L,
@@ -34,6 +41,9 @@ class OcbCamelliaImpl
 
   const GpuTimeSpent* gpuTimeSpent() const
   {
+    if (!config_.measure_gpu_time) { return nullptr; }
+    time_.checksum_ = chk_.exec_time_;
+    time_.ocb_offset_ = off_.exec_time_;
     return config_.measure_gpu_time ? &time_ : nullptr;
   }
 
@@ -45,10 +55,14 @@ class OcbCamelliaImpl
   {
     if (buf_size_ < req)
       {
-        in_buf_ = allocateDevice(req);
-        out_buf_ = allocateDevice(req);
-        if (config_.offset_mode == OffsetComputation::Gpu &&
-            config_.verify_with_cpu_result)
+        if (config_.camellia_on_gpu)
+        {
+          in_buf_ = allocateDevice(req);
+          out_buf_ = allocateDevice(req);
+        }
+        if (config_.offset_mode == OffsetComputation::ApplyOnCpu ||
+            (config_.offset_mode == OffsetComputation::Gpu &&
+             config_.verify_with_cpu_result))
           {
             offsets_host_ = allocateHost(req);
             offsets_cpu_buf_.resize(req / sizeof(Block));
@@ -62,8 +76,11 @@ class OcbCamelliaImpl
       }
   }
 
+  void applyOffsets(Block* data, size_t size);
+  /*
   void applyOffsets(Block& last_offset, std::string_view L, size_t index,
                     Block* data, size_t size);
+                    */
 
   u32* fillOffsets(Block& last_offset, size_t index, std::string_view L,
                    size_t size);
@@ -72,9 +89,10 @@ class OcbCamelliaImpl
                        size_t size);
 
   OcbConfig config_;
-  GpuTimeSpent time_;
+  mutable GpuTimeSpent time_{};
   bool has_error_{};
   CudaMem<u32> keytable_;
+  std::vector<char> cpu_keytable_;
   CudaMem<u32> L_;
   CudaMem<u32> in_buf_;
   CudaMem<u32> out_buf_;

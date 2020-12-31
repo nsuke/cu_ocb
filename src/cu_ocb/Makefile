@@ -10,6 +10,7 @@ BIN_DIR=bin
 LIB_DIR=lib
 
 OBJS=\
+       $(OBJ_DIR)/camellia_cpu.o \
        $(OBJ_DIR)/camellia.o \
        $(OBJ_DIR)/checksum.o \
        $(OBJ_DIR)/offset.o \
@@ -20,6 +21,9 @@ DEPS=$(OBJS:.o=.d)
 DEPS += \
 	$(OBJ_DIR)/main.d \
 	$(OBJ_DIR)/test.d \
+
+$(OBJ_DIR)/%.o : %.cpp
+	$(NVCC) $(NVCC_FLAGS) -c $< -o $@ -MP -MMD
 
 $(OBJ_DIR)/%.o : %.cu
 	$(NVCC) $(NVCC_FLAGS) -c $< -o $@ -MP -MMD

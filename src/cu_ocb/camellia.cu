@@ -616,6 +616,7 @@ __global__ void camellia_setup128(const unsigned char *key, u32 *_subkey)
     dw = tl & subl(17),	tr = subr(15) ^ CAMELLIA_RL1(dw);
     CamelliaSubkeyL(18) = tl ^ subl(19);
     CamelliaSubkeyR(18) = tr ^ subr(19);
+    
     CamelliaSubkeyL(19) = subl(18) ^ subl(20);
     CamelliaSubkeyR(19) = subr(18) ^ subr(20);
     CamelliaSubkeyL(20) = subl(19) ^ subl(21);
@@ -662,10 +663,21 @@ __global__ void camellia_encrypt128(const u32 *_subkey, const u32 *offsets, cons
     __syncthreads();
     auto idx = blockIdx.x * blockDim.x + threadIdx.x;
     u32 io[4];
-    io[0] = SWAP(in_buf[idx * 4 + 0] ^ offsets[idx * 4 + 0]);
-    io[1] = SWAP(in_buf[idx * 4 + 1] ^ offsets[idx * 4 + 1]);
-    io[2] = SWAP(in_buf[idx * 4 + 2] ^ offsets[idx * 4 + 2]);
-    io[3] = SWAP(in_buf[idx * 4 + 3] ^ offsets[idx * 4 + 3]);
+    io[0] = in_buf[idx * 4 + 0];
+    io[1] = in_buf[idx * 4 + 1];
+    io[2] = in_buf[idx * 4 + 2];
+    io[3] = in_buf[idx * 4 + 3];
+    if (offsets)
+    {
+      io[0] = io[0] ^ offsets[idx * 4 + 0];
+      io[1] = io[1] ^ offsets[idx * 4 + 1];
+      io[2] = io[2] ^ offsets[idx * 4 + 2];
+      io[3] = io[3] ^ offsets[idx * 4 + 3];
+    }
+    io[0] = SWAP(io[0]);
+    io[1] = SWAP(io[1]);
+    io[2] = SWAP(io[2]);
+    io[3] = SWAP(io[3]);
 
     u32 il, ir, t0, t1;
 
@@ -752,10 +764,21 @@ __global__ void camellia_encrypt128(const u32 *_subkey, const u32 *offsets, cons
     io[2] = t0;
     io[3] = t1;
 
-    out_buf[idx * 4 + 0] = offsets[idx * 4 + 0] ^ SWAP(io[0]);
-    out_buf[idx * 4 + 1] = offsets[idx * 4 + 1] ^ SWAP(io[1]);
-    out_buf[idx * 4 + 2] = offsets[idx * 4 + 2] ^ SWAP(io[2]);
-    out_buf[idx * 4 + 3] = offsets[idx * 4 + 3] ^ SWAP(io[3]);
+    io[0] = SWAP(io[0]);
+    io[1] = SWAP(io[1]);
+    io[2] = SWAP(io[2]);
+    io[3] = SWAP(io[3]);
+    if (offsets)
+    {
+      io[0] = io[0] ^ offsets[idx * 4 + 0];
+      io[1] = io[1] ^ offsets[idx * 4 + 1];
+      io[2] = io[2] ^ offsets[idx * 4 + 2];
+      io[3] = io[3] ^ offsets[idx * 4 + 3];
+    }
+    out_buf[idx * 4 + 0] = io[0];
+    out_buf[idx * 4 + 1] = io[1];
+    out_buf[idx * 4 + 2] = io[2];
+    out_buf[idx * 4 + 3] = io[3];
 
     return;
 }
@@ -777,10 +800,21 @@ __global__ void camellia_decrypt128(const u32 *_subkey, const u32 *offsets, cons
     __syncthreads();
     auto idx = blockIdx.x * blockDim.x + threadIdx.x;
     u32 io[4];
-    io[0] = SWAP(in_buf[idx * 4 + 0] ^ offsets[idx * 4 + 0]);
-    io[1] = SWAP(in_buf[idx * 4 + 1] ^ offsets[idx * 4 + 1]);
-    io[2] = SWAP(in_buf[idx * 4 + 2] ^ offsets[idx * 4 + 2]);
-    io[3] = SWAP(in_buf[idx * 4 + 3] ^ offsets[idx * 4 + 3]);
+    io[0] = in_buf[idx * 4 + 0];
+    io[1] = in_buf[idx * 4 + 1];
+    io[2] = in_buf[idx * 4 + 2];
+    io[3] = in_buf[idx * 4 + 3];
+    if (offsets)
+    {
+      io[0] = io[0] ^ offsets[idx * 4 + 0];
+      io[1] = io[1] ^ offsets[idx * 4 + 1];
+      io[2] = io[2] ^ offsets[idx * 4 + 2];
+      io[3] = io[3] ^ offsets[idx * 4 + 3];
+    }
+    io[0] = SWAP(io[0]);
+    io[1] = SWAP(io[1]);
+    io[2] = SWAP(io[2]);
+    io[3] = SWAP(io[3]);
 
     u32 il,ir,t0,t1;               /* temporary valiables */
 
@@ -867,10 +901,21 @@ __global__ void camellia_decrypt128(const u32 *_subkey, const u32 *offsets, cons
     io[2] = t0;
     io[3] = t1;
 
-    out_buf[idx * 4 + 0] = SWAP(io[0]) ^ offsets[idx * 4 + 0];
-    out_buf[idx * 4 + 1] = SWAP(io[1]) ^ offsets[idx * 4 + 1];
-    out_buf[idx * 4 + 2] = SWAP(io[2]) ^ offsets[idx * 4 + 2];
-    out_buf[idx * 4 + 3] = SWAP(io[3]) ^ offsets[idx * 4 + 3];
+    io[0] = SWAP(io[0]);
+    io[1] = SWAP(io[1]);
+    io[2] = SWAP(io[2]);
+    io[3] = SWAP(io[3]);
+    if (offsets)
+    {
+      io[0] = io[0] ^ offsets[idx * 4 + 0];
+      io[1] = io[1] ^ offsets[idx * 4 + 1];
+      io[2] = io[2] ^ offsets[idx * 4 + 2];
+      io[3] = io[3] ^ offsets[idx * 4 + 3];
+    }
+    out_buf[idx * 4 + 0] = io[0];
+    out_buf[idx * 4 + 1] = io[1];
+    out_buf[idx * 4 + 2] = io[2];
+    out_buf[idx * 4 + 3] = io[3];
     return;
 }
 

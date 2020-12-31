@@ -18,9 +18,19 @@ class Checksum128Calc
       : block_size_{cuda_block_size}
   {
     if (!block_size_) throw std::invalid_argument("block size cannot be zero");
+    cudaEventCreate(&start_);
+    cudaEventCreate(&stop_);
+  }
+
+  ~Checksum128Calc()
+  {
+    cudaEventDestroy(start_);
+    cudaEventDestroy(stop_);
   }
 
   bool compute(const u32* cu_data, size_t count128, u32* host_result);
+
+  float exec_time_{};
 
  private:
   size_t ensureBuffer(size_t elem_count, CudaMem<u32>& buf, size_t& buf_count);
@@ -36,6 +46,8 @@ class Checksum128Calc
   size_t buf1_count_{};
   CudaMem<u32> buf2_{};
   size_t buf2_count_{};
+  cudaEvent_t start_;
+  cudaEvent_t stop_;
 };
 
 }  // namespace cu_ocb

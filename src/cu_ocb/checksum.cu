@@ -1,10 +1,11 @@
-#include "checksum.cuh"
+#include "cu_ocb/checksum.cuh"
+#include "cu_ocb/measure.cuh"
 
 #include <algorithm>
 
 namespace cu_ocb
 {
-__global__ void reduce_128xor(const u32* src, size_t count, u32* dst)
+__global__ void reduce_128xor(const u32* data, size_t count, u32* result)
 {
   constexpr int elem_size = kU32ElemSize;
   auto idx = blockIdx.x * blockDim.x * 2 + threadIdx.x;
@@ -14,8 +15,8 @@ __global__ void reduce_128xor(const u32* src, size_t count, u32* dst)
   u32 tmp[4];
   for (int e = 0; e < elem_size; ++e)
     s_red[tid * elem_size + e] = tmp[e] =
-        (idx < count ? src[idx * elem_size + e] : 0) ^
-        (idx + blockDim.x < count ? src[(idx + blockDim.x) * elem_size + e]
+        (idx < count ? data[idx * elem_size + e] : 0) ^
+        (idx + blockDim.x < count ? data[(idx + blockDim.x) * elem_size + e]
                                   : 0);
   __syncthreads();
 
@@ -32,7 +33,7 @@ __global__ void reduce_128xor(const u32* src, size_t count, u32* dst)
 
   if (tid == 0)
     for (int e = 0; e < elem_size; ++e)
-      dst[blockIdx.x * elem_size + e] = tmp[e];
+      result[blockIdx.x * elem_size + e] = tmp[e];
 }
 
 size_t Checksum128Calc::ensureBuffer(size_t elem_count, CudaMem<u32>& buf,
@@ -61,11 +62,13 @@ bool Checksum128Calc::compute(const u32* cu_data, size_t count128,
   while (count128 != 1)
     {
       std::swap(src, dst);
-      ;
       auto grid_size = (count128 - 1) / (block_size_ * 2) + 1;
-      reduce_128xor<<<grid_size, block_size_,
-                      block_size_ * CAMELLIA_BLOCK_SIZE>>>(
-          first ? cu_data : src, count128, dst);
+      {
+        // MeasureGpuTime m{&exec_time_, start_, stop_};
+        reduce_128xor<<<grid_size, block_size_,
+                        block_size_ * CAMELLIA_BLOCK_SIZE>>>(
+            first ? cu_data : src, count128, dst);
+      }
       // cudaDeviceSynchronize();
       if (!checkError(__FILE__, __LINE__))
         throw std::runtime_error("reduce_128xor");

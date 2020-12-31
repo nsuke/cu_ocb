@@ -1,4 +1,5 @@
-#include "offset.cuh"
+#include "cu_ocb/measure.cuh"
+#include "cu_ocb/offset.cuh"
 
 #include <cassert>
 
@@ -106,25 +107,28 @@ u32* OcbOffsetCalc::compute(__uint128_t& last_offset, size_t pos128,
       if (u32* buf1 = ensureBuffer(
               buf_idx + 1, next_grid_size * block_size_ * CAMELLIA_BLOCK_SIZE))
         {
-          cudaDeviceSynchronize();
+          // cudaDeviceSynchronize();
           if (!checkError(__FILE__, __LINE__)) throw std::runtime_error("");
 
           cudaMemcpy(buf1, &last_offset, CAMELLIA_BLOCK_SIZE,
                      cudaMemcpyHostToDevice);
-          cudaDeviceSynchronize();
+          // cudaDeviceSynchronize();
           if (!checkError(__FILE__, __LINE__))
             throw std::runtime_error("cudaMemcpy -> buf1");
-          fill_L_reduce<<<grid_size, block_size_,
-                          block_size_ * CAMELLIA_BLOCK_SIZE>>>(pos128, L_table,
-                                                               buf0, buf1);
-          cudaDeviceSynchronize();
+          {
+            // MeasureGpuTime m{&exec_time_, start_, stop_};
+            fill_L_reduce<<<grid_size, block_size_,
+                            block_size_ * CAMELLIA_BLOCK_SIZE>>>(
+                pos128, L_table, buf0, buf1);
+          }
+          // cudaDeviceSynchronize();
           if (!checkError(__FILE__, __LINE__))
             throw std::runtime_error("fill_L_reduce");
           if (!computeIntegral(buf_idx, grid_size))
             throw std::runtime_error("computeIntegral");
           cudaMemcpy(&last_offset, buf0 + (count128 - 1) * kU32ElemSize,
                      CAMELLIA_BLOCK_SIZE, cudaMemcpyDeviceToHost);
-          cudaDeviceSynchronize();
+          // cudaDeviceSynchronize();
           if (!checkError(__FILE__, __LINE__))
             throw std::runtime_error("cudaMemcpy ->last_offset");
           return buf0;
@@ -174,22 +178,29 @@ bool OcbOffsetCalc::computeIntegral(size_t buf_idx, size_t base_size)
       u32* buf2 = ensureBuffer(
           buf_idx + 1, next_grid_size * block_size_ * CAMELLIA_BLOCK_SIZE);
       if (!buf2) throw std::runtime_error("buf2");
-      cudaDeviceSynchronize();
-      block_integral_128xor<<<grid_size, block_size_,
-                              block_size_ * CAMELLIA_BLOCK_SIZE>>>(buf1, buf2);
-      cudaDeviceSynchronize();
+      // cudaDeviceSynchronize();
+      {
+        // MeasureGpuTime m{&exec_time_, start_, stop_};
+        block_integral_128xor<<<grid_size, block_size_,
+                                block_size_ * CAMELLIA_BLOCK_SIZE>>>(buf1,
+                                                                     buf2);
+      }
+      // cudaDeviceSynchronize();
       if (!checkError(__FILE__, __LINE__))
         throw std::runtime_error("block_integral_128xor");
       char zeros[CAMELLIA_BLOCK_SIZE]{};
       cudaMemcpy(buf2, zeros, CAMELLIA_BLOCK_SIZE, cudaMemcpyHostToDevice);
-      cudaDeviceSynchronize();
+      // cudaDeviceSynchronize();
       if (!checkError(__FILE__, __LINE__)) throw std::runtime_error("");
       if (!computeIntegral(buf_idx, grid_size))
         throw std::runtime_error("recur");
     }
-  cudaDeviceSynchronize();
-  apply_128xor<<<base_size, block_size_>>>(buf1, buf0);
-  cudaDeviceSynchronize();
+  // cudaDeviceSynchronize();
+  {
+    // MeasureGpuTime m{&exec_time_, start_, stop_};
+    apply_128xor<<<base_size, block_size_>>>(buf1, buf0);
+  }
+  // cudaDeviceSynchronize();
   if (!checkError(__FILE__, __LINE__)) throw std::runtime_error("apply_128xor");
   return checkError(__FILE__, __LINE__);
 }
